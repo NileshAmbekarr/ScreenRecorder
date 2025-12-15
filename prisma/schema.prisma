@@ -1,0 +1,48 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Video {
+  id              String   @id @default(uuid())
+  filename        String
+  contentType     String   @default("video/webm")
+  durationSeconds Float
+  sizeBytes       Int
+  publicUrl       String
+  viewCount       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  views         View[]
+  watchSessions WatchSession[]
+}
+
+model View {
+  id        String   @id @default(uuid())
+  videoId   String
+  sessionId String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, sessionId])
+}
+
+model WatchSession {
+  id                 String   @id @default(uuid())
+  videoId            String
+  sessionId          String
+  maxWatchedSeconds  Float
+  durationSeconds    Float
+  watchedPercentage  Float
+  createdAt          DateTime @default(now())
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId])
+}
