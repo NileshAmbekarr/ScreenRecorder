@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/db';
+import { v4 as uuidv4 } from 'uuid';
+import { db } from '@/lib/db';
+import { videos, views } from '@/lib/schema';
+import { eq, and, gte, sql } from 'drizzle-orm';
 
 // Deduplication window in hours
 const DEDUP_HOURS = 24;
@@ -21,8 +24,8 @@ export async function POST(
         }
 
         // Check if video exists
-        const video = await prisma.video.findUnique({
-            where: { id: videoId },
+        const video = await db.query.videos.findFirst({
+            where: eq(videos.id, videoId),
         });
 
         if (!video) {
@@ -34,12 +37,12 @@ export async function POST(
 
         // Check for duplicate view within dedup window
         const cutoffTime = new Date(Date.now() - DEDUP_HOURS * 60 * 60 * 1000);
-        const existingView = await prisma.view.findFirst({
-            where: {
-                videoId,
-                sessionId,
-                createdAt: { gte: cutoffTime },
-            },
+        const existingView = await db.query.views.findFirst({
+            where: and(
+                eq(views.videoId, videoId),
+                eq(views.sessionId, sessionId),
+                gte(views.createdAt, cutoffTime)
+            ),
         });
 
         if (existingView) {
@@ -50,20 +53,20 @@ export async function POST(
         // Get user agent from request headers
         const userAgent = request.headers.get('user-agent') || undefined;
 
-        // Create view record and increment view count
-        await prisma.$transaction([
-            prisma.view.create({
-                data: {
-                    videoId,
-                    sessionId,
-                    userAgent,
-                },
-            }),
-            prisma.video.update({
-                where: { id: videoId },
-                data: { viewCount: { increment: 1 } },
-            }),
-        ]);
+        // Create view record
+        await db.insert(views).values({
+            id: uuidv4(),
+            videoId,
+            sessionId,
+            userAgent,
+            createdAt: new Date(),
+        });
+
+        // Increment view count
+        await db
+            .update(videos)
+            .set({ viewCount: sql`${videos.viewCount} + 1` })
+            .where(eq(videos.id, videoId));
 
         return NextResponse.json({ ok: true });
     } catch (error) {

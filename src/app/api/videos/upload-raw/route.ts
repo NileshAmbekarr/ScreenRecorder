@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
-import prisma from '@/lib/db';
-import { saveRawVideo, getFinalVideoPath, getPublicUrl, deleteRawVideo, ensureUploadDirs } from '@/lib/storage';
+import { db } from '@/lib/db';
+import { videos } from '@/lib/schema';
+import { saveRawVideo, getFinalVideoPath, getPublicUrl, deleteRawVideo, ensureUploadDirs, saveFinalVideo } from '@/lib/storage';
 import { trimVideo, getVideoDuration, copyVideo } from '@/lib/ffmpeg';
 import fs from 'fs/promises';
 
-// Configure this route to handle large files
-export const config = {
-    api: {
-        bodyParser: false,
-    },
-};
-
-// Increase timeout for file uploads
+// Next.js App Router route segment config
+export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '200', 10);
@@ -81,11 +76,9 @@ export async function POST(request: NextRequest) {
 
         let result;
         if (endTime !== null && startTime >= 0 && endTime > startTime) {
-            // Trim the video
             console.log(`Trimming video from ${startTime}s to ${endTime}s`);
             result = await trimVideo(rawPath, finalPath, startTime, endTime);
         } else {
-            // Just copy the video (no trimming)
             console.log('Copying video without trimming');
             result = await copyVideo(rawPath, finalPath);
         }
@@ -115,43 +108,50 @@ export async function POST(request: NextRequest) {
         }
 
         // Get duration of final video
-        const duration = await getVideoDuration(finalPath);
+        let duration = await getVideoDuration(finalPath);
         console.log('Video duration:', duration);
 
         if (duration === null) {
-            console.error('Could not determine duration');
-            // Don't fail, use estimated duration
-            const estimatedDuration = endTime && startTime ? (endTime - startTime) : 10;
-            console.log('Using estimated duration:', estimatedDuration);
+            console.warn('Could not determine duration, using estimated');
+            duration = endTime && startTime ? (endTime - startTime) : 10;
         }
 
         // Get file size of final video
         const stats = await fs.stat(finalPath);
         console.log('Final file size:', stats.size);
 
-        // Create database record
-        const video = await prisma.video.create({
-            data: {
-                id: videoId,
-                filename: `videos/${videoId}.webm`,
-                contentType: 'video/webm',
-                durationSeconds: duration || (endTime && startTime ? endTime - startTime : 10),
-                sizeBytes: stats.size,
-                publicUrl: getPublicUrl(videoId),
-            },
+        // Upload to R2/S3 if configured (or keep locally)
+        await saveFinalVideo(videoId, finalPath);
+        console.log('Video saved to storage');
+
+        const publicUrl = getPublicUrl(videoId);
+        const now = new Date();
+
+        // Create database record using Drizzle
+        await db.insert(videos).values({
+            id: videoId,
+            filename: `videos/${videoId}.webm`,
+            contentType: 'video/webm',
+            durationSeconds: duration,
+            sizeBytes: stats.size,
+            publicUrl: publicUrl,
+            viewCount: 0,
+            createdAt: now,
+            updatedAt: now,
         });
-        console.log('Database record created:', video.id);
+        console.log('Database record created:', videoId);
 
         // Clean up raw file
         await deleteRawVideo(videoId);
         console.log('Raw file cleaned up');
 
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
         const response = {
-            videoId: video.id,
-            publicUrl: video.publicUrl,
-            duration: video.durationSeconds,
-            sizeBytes: video.sizeBytes,
-            watchPageUrl: `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/v/${video.id}`,
+            videoId: videoId,
+            publicUrl: publicUrl,
+            duration: duration,
+            sizeBytes: stats.size,
+            watchPageUrl: `${baseUrl}/v/${videoId}`,
         };
 
         console.log('Sending response:', response);
@@ -160,12 +160,10 @@ export async function POST(request: NextRequest) {
     } catch (error) {
         console.error('Upload error:', error);
 
-        // Return proper JSON error
         return NextResponse.json(
             {
                 error: 'server_error',
                 message: error instanceof Error ? error.message : 'An unexpected error occurred',
-                details: error instanceof Error ? error.stack : undefined
             },
             { status: 500 }
         );

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/db';
+import { db } from '@/lib/db';
+import { videos, views, watchSessions } from '@/lib/schema';
+import { eq, avg } from 'drizzle-orm';
 
 export async function GET(
     request: NextRequest,
@@ -8,8 +10,9 @@ export async function GET(
     try {
         const { videoId } = await params;
 
-        const video = await prisma.video.findUnique({
-            where: { id: videoId },
+        // Find video
+        const video = await db.query.videos.findFirst({
+            where: eq(videos.id, videoId),
         });
 
         if (!video) {
@@ -19,22 +22,29 @@ export async function GET(
             );
         }
 
-        // Calculate average watch percentage
-        const watchStats = await prisma.watchSession.aggregate({
-            where: { videoId },
-            _avg: { watchedPercentage: true },
-            _count: true,
-        });
+        // Get average watch percentage
+        const watchStats = await db
+            .select({ avgPercentage: avg(watchSessions.watchedPercentage) })
+            .from(watchSessions)
+            .where(eq(watchSessions.videoId, videoId));
+
+        const avgWatchPercentage = watchStats[0]?.avgPercentage ?? 0;
 
         return NextResponse.json({
-            videoId: video.id,
-            publicUrl: video.publicUrl,
-            duration: video.durationSeconds,
-            sizeBytes: video.sizeBytes,
-            viewCount: video.viewCount,
-            avgWatchPct: watchStats._avg.watchedPercentage || 0,
-            watchSessionCount: watchStats._count,
-            createdAt: video.createdAt,
+            video: {
+                id: video.id,
+                filename: video.filename,
+                contentType: video.contentType,
+                durationSeconds: video.durationSeconds,
+                sizeBytes: video.sizeBytes,
+                publicUrl: video.publicUrl,
+                viewCount: video.viewCount,
+                createdAt: video.createdAt,
+            },
+            analytics: {
+                viewCount: video.viewCount,
+                avgWatchPercentage: Number(avgWatchPercentage),
+            },
         });
     } catch (error) {
         console.error('Get video error:', error);

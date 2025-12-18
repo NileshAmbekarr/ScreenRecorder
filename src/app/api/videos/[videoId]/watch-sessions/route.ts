@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/db';
+import { v4 as uuidv4 } from 'uuid';
+import { db } from '@/lib/db';
+import { videos, watchSessions } from '@/lib/schema';
+import { eq, and } from 'drizzle-orm';
 
 export async function POST(
     request: NextRequest,
@@ -8,18 +11,18 @@ export async function POST(
     try {
         const { videoId } = await params;
         const body = await request.json();
-        const { sessionId, maxWatchedSeconds, durationSeconds } = body;
+        const { sessionId, watchedSeconds, videoDuration } = body;
 
-        if (!sessionId || maxWatchedSeconds === undefined || !durationSeconds) {
+        if (!sessionId || watchedSeconds === undefined || !videoDuration) {
             return NextResponse.json(
-                { error: 'missing_fields', message: 'sessionId, maxWatchedSeconds, and durationSeconds are required' },
+                { error: 'missing_fields', message: 'sessionId, watchedSeconds, and videoDuration are required' },
                 { status: 400 }
             );
         }
 
         // Check if video exists
-        const video = await prisma.video.findUnique({
-            where: { id: videoId },
+        const video = await db.query.videos.findFirst({
+            where: eq(videos.id, videoId),
         });
 
         if (!video) {
@@ -30,35 +33,37 @@ export async function POST(
         }
 
         // Calculate watched percentage
-        const watchedPercentage = Math.min(100, (maxWatchedSeconds / durationSeconds) * 100);
+        const watchedPercentage = Math.min(100, (watchedSeconds / videoDuration) * 100);
 
-        // Check for existing session to update instead of creating duplicate
-        const existingSession = await prisma.watchSession.findFirst({
-            where: { videoId, sessionId },
-            orderBy: { createdAt: 'desc' },
+        // Find existing session
+        const existingSession = await db.query.watchSessions.findFirst({
+            where: and(
+                eq(watchSessions.videoId, videoId),
+                eq(watchSessions.sessionId, sessionId)
+            ),
         });
 
         if (existingSession) {
-            // Update if current watch is longer
-            if (maxWatchedSeconds > existingSession.maxWatchedSeconds) {
-                await prisma.watchSession.update({
-                    where: { id: existingSession.id },
-                    data: {
-                        maxWatchedSeconds,
+            // Update if new max watched time
+            if (watchedSeconds > existingSession.maxWatchedSeconds) {
+                await db
+                    .update(watchSessions)
+                    .set({
+                        maxWatchedSeconds: watchedSeconds,
                         watchedPercentage,
-                    },
-                });
+                    })
+                    .where(eq(watchSessions.id, existingSession.id));
             }
         } else {
-            // Create new watch session
-            await prisma.watchSession.create({
-                data: {
-                    videoId,
-                    sessionId,
-                    maxWatchedSeconds,
-                    durationSeconds,
-                    watchedPercentage,
-                },
+            // Create new session
+            await db.insert(watchSessions).values({
+                id: uuidv4(),
+                videoId,
+                sessionId,
+                maxWatchedSeconds: watchedSeconds,
+                durationSeconds: videoDuration,
+                watchedPercentage,
+                createdAt: new Date(),
             });
         }
 

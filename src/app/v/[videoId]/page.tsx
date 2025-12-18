@@ -1,4 +1,6 @@
-import prisma from '@/lib/db';
+import { db } from '@/lib/db';
+import { videos, watchSessions } from '@/lib/schema';
+import { eq, avg } from 'drizzle-orm';
 import PublicPlayer from '@/components/PublicPlayer';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
@@ -9,7 +11,9 @@ interface PageProps {
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
     const { videoId } = await params;
-    const video = await prisma.video.findUnique({ where: { id: videoId } });
+    const video = await db.query.videos.findFirst({
+        where: eq(videos.id, videoId),
+    });
 
     if (!video) {
         return { title: 'Video Not Found' };
@@ -29,8 +33,8 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function WatchPage({ params }: PageProps) {
     const { videoId } = await params;
 
-    const video = await prisma.video.findUnique({
-        where: { id: videoId },
+    const video = await db.query.videos.findFirst({
+        where: eq(videos.id, videoId),
     });
 
     if (!video) {
@@ -38,10 +42,12 @@ export default async function WatchPage({ params }: PageProps) {
     }
 
     // Calculate average watch percentage
-    const watchStats = await prisma.watchSession.aggregate({
-        where: { videoId },
-        _avg: { watchedPercentage: true },
-    });
+    const watchStats = await db
+        .select({ avgPercentage: avg(watchSessions.watchedPercentage) })
+        .from(watchSessions)
+        .where(eq(watchSessions.videoId, videoId));
+
+    const avgWatchPct = watchStats[0]?.avgPercentage ?? 0;
 
     return (
         <main className="watch-page">
@@ -58,7 +64,7 @@ export default async function WatchPage({ params }: PageProps) {
                     publicUrl={video.publicUrl}
                     duration={video.durationSeconds}
                     viewCount={video.viewCount}
-                    avgWatchPct={watchStats._avg.watchedPercentage || 0}
+                    avgWatchPct={Number(avgWatchPct)}
                 />
             </div>
 
